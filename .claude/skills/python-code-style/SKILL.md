@@ -1,18 +1,24 @@
-# Python Coding Style Guide
+---
+name: python-code-style
+description: Enforces Python coding style following scientific Python ecosystem best practices. Use when reviewing code, writing Python code, or when the user asks about code style, formatting, or Python best practices.
+---
 
-Scientific Python ecosystem best practices.
+# Python Code Style Guide
+
+Scientific Python ecosystem best practices for code reviews and development.
 
 ## Project Structure
 
 - `src/` layout with package code in `src/jdsp/`
 - Single `pyproject.toml` (SPEC 0 compliant)
 - Tests in `tests/`, docs in `docs/` (if present)
-- Build: `hatchling` or `setuptools-scm`, PEP 621 metadata
+- Build: `hatchling`, PEP 621 metadata
 - Pin minimum dependency versions
 
 ## Code Organization
 
 ### Imports
+
 - `from __future__ import annotations` at top
 - All imports at top-level (no conditional imports)
 - Group: stdlib → third-party → local
@@ -20,6 +26,7 @@ Scientific Python ecosystem best practices.
 - Ruff sorts automatically (I001)
 
 ### Type Hints
+
 - Required on all functions
 - Use `|` for unions (`int | None`)
 - Modern syntax via `from __future__ import annotations`
@@ -63,7 +70,6 @@ Scientific Python ecosystem best practices.
 ## Code Quality Tools
 
 - **Ruff**: Primary linter/formatter (`uv run ruff check --fix .`)
-- **mypy**: Type checker (strict mode)
 - **pytest**: Tests in `tests/`, names: `test_<function>_<scenario>`
 
 ## Principles
@@ -74,3 +80,17 @@ Scientific Python ecosystem best practices.
 4. Prefer stdlib when reasonable
 5. Vectorize pandas/numpy operations
 6. Readability matters
+
+## Code Review Checklist
+
+When reviewing code, verify:
+
+- [ ] Type hints present on all functions
+- [ ] Imports properly organized and sorted
+- [ ] Naming follows conventions (snake_case, PascalCase, etc.)
+- [ ] Docstrings follow Google style
+- [ ] Error handling uses appropriate patterns
+- [ ] Path operations use `pathlib.Path`
+- [ ] Code passes ruff and mypy checks
+- [ ] Functions have single responsibility
+- [ ] No unnecessary complexity or duplication

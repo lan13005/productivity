@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Sync .claude directory, mapping the directory tree, into a target directory's .claude
 directory. symlinks all leaf files.
 """
@@ -62,6 +63,34 @@ def ensure_parent_dir(path: str):
         os.makedirs(parent, exist_ok=True)
 
 
+def clean_old_symlinks(claude_dir: str):
+    """
+    Remove all symlinks in all subdirectories of the .claude directory.
+    
+    Args:
+        claude_dir: Path to the .claude directory to clean
+    """
+    claude_dir = os.path.abspath(os.path.expanduser(claude_dir))
+    
+    if not os.path.isdir(claude_dir):
+        raise SystemExit(f"ERROR: .claude directory does not exist: {claude_dir}")
+    
+    removed = 0
+    
+    for root, dirs, files in os.walk(claude_dir):
+        for name in files + dirs:
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                try:
+                    os.unlink(path)
+                    print(f"[✓] Removed symlink: {path}")
+                    removed += 1
+                except OSError as e:
+                    print(f"[!] Failed to remove symlink {path}: {e}")
+    
+    print(f"\nCleaned {removed} symlink(s) from {claude_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Mirror the directory tree of src_claude into tgt_dir by symlinking leaf files."
@@ -80,6 +109,11 @@ def main():
         default=1,
         help="Depth to search for .claude directories (default: 1)",
     )
+    parser.add_argument(
+        "-c", "--clean-old-symlinks",
+        action="store_true",
+        help="Clean all symlinks in all subdirectories of the .claude directory",
+    )
     args = parser.parse_args()
 
     src_root = os.path.abspath(os.path.expanduser(args.src))
@@ -96,6 +130,9 @@ def main():
         raise SystemExit(f"ERROR: src_claude does not exist or is not a directory: {src_root}")
 
     os.makedirs(tgt_root, exist_ok=True)
+
+    if args.clean_old_symlinks:
+        clean_old_symlinks(tgt_root)
 
     linked = 0
     skipped = 0

@@ -33,7 +33,7 @@ Based off of Jon Halverson's: https://github.com/jdh4/mac_productivity/tree/main
 Sync .claude directory, mapping the directory tree, into a target directory's .claude directory. symlinks all leaf files.
 
 ```bash
-python sync_claude.py <target_folder>
+./sync_claude.py <target_folder> --clean-old-symlinks
 ```
 
 ## Things to think about:
