@@ -27,6 +27,15 @@ Based off of Jon Halverson's: https://github.com/jdh4/mac_productivity/tree/main
 - karabiner-elements uses json file which we can sync the local version (for vcs) and the one used on the machine.
   - use `sync_karabiner.sh` to sync the local version to the machine.
 
+
+## Agent Usage
+ 
+Sync .claude directory, mapping the directory tree, into a target directory's .claude directory. symlinks all leaf files.
+
+```bash
+python sync_claude.py <target_folder>
+```
+
 ## Things to think about:
 - Dynamic placeholders (like {cursor} and {date}) can be used with raycast snippets and quicklinks
 - [raycast snippets](https://manual.raycast.com/snippets): store and insert frequently used text with dynamic placeholders

@@ -67,8 +67,7 @@ def main():
         description="Mirror the directory tree of src_claude into tgt_dir by symlinking leaf files."
     )
     parser.add_argument(
-        "--tgt_dir",
-        default="../analyze-jds",
+        "tgt_dir",
         help="Target root directory to receive the mirrored tree of symlinks",
     )
     parser.add_argument(
