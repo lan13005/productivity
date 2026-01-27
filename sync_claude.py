@@ -1,3 +1,7 @@
+"""Sync .claude directory, mapping the directory tree, into a target directory's .claude
+directory. symlinks all leaf files.
+"""
+
 import os
 import argparse
 

@@ -1,7 +1,9 @@
 #!/bin/bash
 
+#########################################################################
 # Sync karabiner.json from config directory to karabiner config location
 # If files are different, show git diff between them before copying
+#########################################################################
 
 SOURCE_FILE="karabiner_config/karabiner.json"
 DEST_FILE="$HOME/.config/karabiner/karabiner.json"
