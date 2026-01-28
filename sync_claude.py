@@ -110,7 +110,7 @@ def main():
         help="Depth to search for .claude directories (default: 1)",
     )
     parser.add_argument(
-        "-c", "--clean-old-symlinks",
+        "--clean-old-symlinks",
         action="store_true",
         help="Clean all symlinks in all subdirectories of the .claude directory",
     )
