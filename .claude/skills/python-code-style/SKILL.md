@@ -72,6 +72,17 @@ Scientific Python ecosystem best practices for code reviews and development.
 - **Ruff**: Primary linter/formatter (`uv run ruff check --fix .`)
 - **pytest**: Tests in `tests/`, names: `test_<function>_<scenario>`
 
+### Ruff: avoid common issues
+
+- **BLE001**: Do not catch blind `Exception`; catch specific exceptions (e.g. `OSError`, `ValueError`). Use `raise ... from e` when re-raising (B904).
+- **PTH**: Use `pathlib.Path` and `Path.open()`; avoid `os.path.*` and built-in `open(path, ...)`.
+- **PD011**: Prefer `.to_numpy()` over `.values` for pandas.
+- **Imports**: Top-level only; use `# noqa: PLC0415` with a comment only when a deferred import is needed to break a circular import.
+- **PLW2901**: Do not reuse/overwrite the loop variable inside the loop; use a new name (e.g. `sorted_df`).
+- **PLW1510**: Use explicit `check=True` or `check=False` in `subprocess.run()`.
+- **SIM105**: Use `contextlib.suppress(SomeError)` instead of `try`/`except`/`pass` when intentionally suppressing.
+- **RUF001**: Avoid ambiguous Unicode in source (e.g. use ASCII "sigma" in strings).
+
 ## Principles
 
 1. Explicit over implicit
