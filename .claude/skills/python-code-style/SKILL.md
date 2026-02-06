@@ -49,9 +49,13 @@ Scientific Python ecosystem best practices for code reviews and development.
 - Use `@dataclass` for config/containers
 - `field(default_factory=...)` for mutable defaults
 
+## Logging
+
+- Use the **logging** module and attach **RichHandler** (`from rich.logging import RichHandler`) so log output is rendered with rich. Use rich markup in messages for user-facing levels: info: `[blue]...[/blue]`, warning: `[yellow]...[/yellow]`, success: `[green]...[/green]`.
+- Choose EITHER error raising OR logging. If execution should stop, raise error.
+
 ## Error Handling
 
-- User-facing: `rich.console.Console` with color codes
 - Internal: specific exceptions, `contextlib.suppress()` over `try-except-pass`
 - Chain exceptions: `raise ... from e`
 
