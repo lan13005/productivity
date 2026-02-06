@@ -120,11 +120,14 @@ def main():
     tgt_root = os.path.abspath(os.path.expanduser(args.tgt_dir))
     
     if os.path.basename(tgt_root) != '.claude':
-        tgt_root = find_claude_directories(tgt_root, depth=args.depth)
-        if len(tgt_root) != 1:
-            raise SystemExit(f"ERROR: Multiple .claude directories found at depth {args.depth}: {tgt_root}")
-        tgt_root = tgt_root[0]
-        print(f"\nWARNING! You did not specify a .claude directory but we found the following: {tgt_root}\n")
+        found = find_claude_directories(tgt_root, depth=args.depth)
+        if len(found) > 1:
+            raise SystemExit(f"ERROR: Multiple .claude directories found at depth {args.depth}: {found}")
+        if len(found) == 1:
+            tgt_root = found[0]
+            print(f"\nWARNING! You did not specify a .claude directory but we found the following: {tgt_root}\n")
+        else:
+            tgt_root = os.path.join(tgt_root, '.claude')
 
     if not os.path.isdir(src_root):
         raise SystemExit(f"ERROR: src_claude does not exist or is not a directory: {src_root}")
