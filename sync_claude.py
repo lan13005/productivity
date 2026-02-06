@@ -43,7 +43,7 @@ def iter_file_endpoints(root: str):
         for name in files:
             src = os.path.join(cur_root, name)
             try:
-                st = os.lstat(src)  # don't follow symlinks
+                os.lstat(src)  # don't follow symlinks
             except OSError:
                 continue
 
