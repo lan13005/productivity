@@ -13,23 +13,39 @@ import os
 import re
 import sys
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Mapping, NoReturn, Optional
 
 import numpy as np
 import pandas as pd
 import torch
 
 
-def _is_numeric_summary_val(val) -> bool:
+FILTER_EXPR_PATTERN = re.compile(
+    r"^(?P<column>[a-zA-Z0-9_./-]+)\s*(?P<operator>>=|<=|==|!=|>|<)\s*(?P<value>[\d.eE+-]+)$"
+)
+
+
+def _die(message: str) -> NoReturn:
+    print(f"Error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _is_numeric_summary_val(val: Any) -> bool:
     """True if value is a displayable numeric (int/float, not NaN)."""
     if val is None:
         return False
-    if isinstance(val, float) and math.isnan(val):
+    if isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)) and math.isnan(float(val)):
         return False
     return isinstance(val, (int, float))
 
 
-def _flatten_config(config: dict, prefix: str = "") -> dict:
+def _numeric_summary(summary: Mapping[str, Any]) -> dict:
+    return {k: v for k, v in summary.items() if _is_numeric_summary_val(v)}
+
+
+def _flatten_config(config: Mapping[str, Any], prefix: str = "") -> dict:
     """Flatten nested config dict to dot-notation keys."""
     flat = {}
     for key, value in config.items():
@@ -39,6 +55,62 @@ def _flatten_config(config: dict, prefix: str = "") -> dict:
         else:
             flat[full_key] = value
     return flat
+
+
+def _load_checkpoint(path: str) -> dict:
+    try:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        _die(f"Failed to load checkpoint '{path}': {exc}")
+    if not isinstance(checkpoint, dict):
+        _die(f"Checkpoint is not a dictionary: {path}")
+    return checkpoint
+
+
+def _restore_history_from_cache(cache: dict) -> pd.DataFrame:
+    history = cache.get("history")
+    if history is None:
+        return pd.DataFrame()
+    if isinstance(history, pd.DataFrame):
+        return history
+    if isinstance(history, list):
+        df = pd.DataFrame(history)
+    elif isinstance(history, dict):
+        if {"index", "columns", "data"}.issubset(history.keys()):
+            df = pd.DataFrame(**history)
+        else:
+            df = pd.DataFrame(history)
+    else:
+        return pd.DataFrame()
+    if "step" in df.columns:
+        df = df.set_index("step")
+    if df.index.name != "step":
+        df.index.name = "step"
+    return df
+
+
+def _build_history_for_cache(history_df: pd.DataFrame) -> dict:
+    frame = history_df.reset_index()
+    if "step" not in frame.columns:
+        frame = frame.rename(columns={frame.columns[0]: "step"})
+    return frame.to_dict(orient="split")
+
+
+def _clean_history(history_df: pd.DataFrame) -> pd.DataFrame:
+    numeric_cols = history_df.select_dtypes(include=[np.number]).columns.tolist()
+    if not numeric_cols:
+        return pd.DataFrame()
+    cleaned = history_df[numeric_cols].dropna(how="all")
+    if "_step" in cleaned.columns:
+        cleaned = cleaned.set_index("_step")
+    elif "step" in cleaned.columns:
+        cleaned = cleaned.set_index("step")
+    cleaned.index.name = "step"
+    return cleaned
+
+
+def _has_history_data(history: Any) -> bool:
+    return history is not None and isinstance(history, pd.DataFrame) and not history.empty
 
 
 def _get_wandb_data(
@@ -53,68 +125,50 @@ def _get_wandb_data(
       - history: pd.DataFrame with step as index, metrics as columns
       - name: run name
     """
-    # Check cache in checkpoint
+    checkpoint = _load_checkpoint(checkpoint_path) if checkpoint_path else None
+
+    # Prefer checkpoint cache unless a refresh is requested.
     if checkpoint_path and not refresh:
-        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        if "wandb_cache" in ckpt and ckpt["wandb_cache"]:
-            cache = ckpt["wandb_cache"]
-            if isinstance(cache.get("history"), dict):
-                cache["history"] = pd.DataFrame(cache["history"])
+        cache = checkpoint.get("wandb_cache")
+        if isinstance(cache, dict) and cache:
+            cache = cache.copy()
+            cache["history"] = _restore_history_from_cache(cache)
             return cache
 
-    # Fetch from wandb API
     try:
         import wandb
     except ImportError:
-        print("Error: wandb is not installed. Run: pip install wandb", file=sys.stderr)
-        sys.exit(1)
+        _die("wandb is not installed. Run: pip install wandb")
 
     api = wandb.Api()
     try:
         run = api.run(run_path)
     except wandb.errors.CommError as e:
-        print(f"Error: Could not fetch run '{run_path}': {e}", file=sys.stderr)
-        sys.exit(1)
+        _die(f"Could not fetch run '{run_path}': {e}")
 
-    # Build cache
-    history_df = run.history()
-
-    numeric_cols = history_df.select_dtypes(include=[np.number]).columns.tolist()
-    history_clean = history_df[numeric_cols].dropna(how="all")
-    if "_step" in history_clean.columns:
-        history_clean = history_clean.set_index("_step")
-        history_clean.index.name = "step"
-    elif "step" in history_clean.columns:
-        history_clean = history_clean.set_index("step")
+    history_clean = _clean_history(run.history())
 
     cache = {
         "fetched_at": datetime.now().isoformat(),
         "name": run.name,
         "config": _flatten_config(dict(run.config)),
-        "summary": {
-            k: v
-            for k, v in run.summary.items()
-            if not k.startswith("_") and _is_numeric_summary_val(v)
-        },
+        "summary": _numeric_summary(
+            {k: v for k, v in run.summary.items() if not k.startswith("_")}
+        ),
         "history": history_clean,
     }
 
-    if checkpoint_path:
-        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if checkpoint is not None:
         cache_for_save = cache.copy()
-        cache_for_save["history"] = history_clean.to_dict()
-        ckpt["wandb_cache"] = cache_for_save
-        torch.save(ckpt, checkpoint_path)
+        cache_for_save["history"] = _build_history_for_cache(history_clean)
+        checkpoint["wandb_cache"] = cache_for_save
+        torch.save(checkpoint, checkpoint_path)
 
     return cache
 
 
 def _select_metrics(history_df, pattern: str):
-    """Filter DataFrame columns by exact name match.
-
-    Pattern is pipe-separated column names (e.g. 'val/loss|train/loss').
-    Matches only columns that exactly equal one of the names, not substrings.
-    """
+    """Filter DataFrame columns by exact name match."""
     if history_df is None or history_df.empty:
         return history_df
 
@@ -136,19 +190,18 @@ def _filter_rows(history_df, expr: str):
     if history_df is None or history_df.empty:
         return history_df
 
-    match = re.match(r"([a-zA-Z_/0-9]+)\s*([><=!]+)\s*([\d.eE+-]+)", expr)
+    match = FILTER_EXPR_PATTERN.match(expr.strip())
     if not match:
-        print(f"Error: Invalid filter expression: {expr}", file=sys.stderr)
-        sys.exit(1)
+        _die(f"Invalid filter expression: {expr}")
 
-    col, op, val = match.groups()
-    val = float(val)
+    col = match.group("column")
+    op = match.group("operator")
+    val = float(match.group("value"))
 
     if col == "step":
         series = history_df.index.to_series()
     elif col not in history_df.columns:
-        print(f"Error: Column not found: {col}", file=sys.stderr)
-        sys.exit(1)
+        _die(f"Column not found: {col}")
     else:
         series = history_df[col]
 
@@ -161,12 +214,8 @@ def _filter_rows(history_df, expr: str):
         "!=": lambda x: x != val,
     }
 
-    if op not in ops:
-        print(f"Error: Unknown operator: {op}", file=sys.stderr)
-        sys.exit(1)
-
-    mask = ops[op](series)
-    return history_df[mask.values]
+    mask = ops[op](series).fillna(False)
+    return history_df.loc[mask]
 
 
 def _wrap_column_names(expr: str, columns: list) -> str:
@@ -178,9 +227,7 @@ def _wrap_column_names(expr: str, columns: list) -> str:
     result = expr
     for col in cols_to_wrap:
         pattern = re.escape(col)
-        result = re.sub(
-            rf"(?<![`\w]){pattern}(?![`\w])", f"`{col}`", result
-        )
+        result = re.sub(rf"(?<![`\w]){pattern}(?![`\w])", f"`{col}`", result)
     return result
 
 
@@ -190,20 +237,20 @@ def _apply_eval(history_df, expr: str):
         return history_df
 
     if "=" not in expr:
-        print(f"Error: Eval expression must be 'name=expression': {expr}", file=sys.stderr)
-        sys.exit(1)
+        _die(f"Eval expression must be 'name=expression': {expr}")
 
     name, formula = expr.split("=", 1)
     name = name.strip()
     formula = formula.strip()
+    if not name:
+        _die(f"Eval expression has empty output column: {expr}")
 
     wrapped_formula = _wrap_column_names(formula, history_df.columns.tolist())
 
     try:
         history_df[name] = history_df.eval(wrapped_formula)
     except Exception as e:
-        print(f"Error evaluating '{expr}': {e}", file=sys.stderr)
-        sys.exit(1)
+        _die(f"Error evaluating '{expr}': {e}")
 
     return history_df
 
@@ -220,24 +267,50 @@ def _filter_nan_rows(history_df, hide_any_nan: bool = True):
     return history_df.dropna(how=how)
 
 
+def _format_scalar(value: Any, precision: int = 4) -> str:
+    if pd.isna(value):
+        return "nan"
+    if isinstance(value, float):
+        return f"{value:.{precision}g}"
+    return str(value)
+
+
+def _print_history_table(history: pd.DataFrame, file) -> None:
+    cols = list(history.columns)
+    print(f"# step | {' | '.join(cols)}", file=file)
+    for idx, row in history.iterrows():
+        values = [_format_scalar(row[c]) for c in cols]
+        print(f"{idx} | {' | '.join(values)}", file=file)
+
+
+def _print_key_value_block(
+    data: Mapping[str, Any], file, empty_message: str, format_floats: bool = False
+) -> None:
+    if not data:
+        print(empty_message, file=file)
+        return
+    max_key_len = max(len(k) for k in data.keys())
+    for key in sorted(data.keys()):
+        value = data[key]
+        if format_floats and isinstance(value, float):
+            print(f"{key:<{max_key_len}} = {value:.6g}", file=file)
+        else:
+            print(f"{key:<{max_key_len}} = {value}", file=file)
+
+
 def _output_json_v2(runs_data: List[dict], file) -> None:
     """Output runs data as JSON (v2 format)."""
     output = {"runs": []}
     for data in runs_data:
-        summary = data.get("summary", {})
         run_out = {
             "run_path": data["run_path"],
             "name": data.get("name", ""),
             "fetched_at": data.get("fetched_at", ""),
             "config": data.get("config", {}),
-            "summary": {k: v for k, v in summary.items() if _is_numeric_summary_val(v)},
+            "summary": _numeric_summary(data.get("summary", {})),
         }
         history = data.get("history")
-        if (
-            history is not None
-            and isinstance(history, pd.DataFrame)
-            and not history.empty
-        ):
+        if _has_history_data(history):
             run_out["history"] = history.reset_index().to_dict(orient="records")
         output["runs"].append(run_out)
 
@@ -249,11 +322,7 @@ def _output_csv_v2(runs_data: List[dict], file) -> None:
     """Output runs data as CSV (history only for single run)."""
     if len(runs_data) == 1:
         history = runs_data[0].get("history")
-        if (
-            history is not None
-            and isinstance(history, pd.DataFrame)
-            and not history.empty
-        ):
+        if _has_history_data(history):
             history.reset_index().to_csv(file, index=False)
         else:
             print("# No history data", file=file)
@@ -264,10 +333,7 @@ def _output_csv_v2(runs_data: List[dict], file) -> None:
                 "run_path": data["run_path"],
                 "name": data.get("name", ""),
             }
-            summary = data.get("summary", {})
-            row.update(
-                {k: v for k, v in summary.items() if _is_numeric_summary_val(v)}
-            )
+            row.update(_numeric_summary(data.get("summary", {})))
             rows.append(row)
 
         if rows:
@@ -295,7 +361,7 @@ def _output_single_run_agent(
     name = data.get("name", "unknown")
     fetched_at = data.get("fetched_at", "")
     config = data.get("config", {})
-    summary = data.get("summary", {})
+    summary = _numeric_summary(data.get("summary", {}))
     history = data.get("history")
 
     print(f"# Run: {name} ({run_path})", file=file)
@@ -307,17 +373,17 @@ def _output_single_run_agent(
         print("[SCHEMA]", file=file)
         print(f"# Metric schema for run: {name} ({run_path})", file=file)
         print("#", file=file)
-        if history is not None and isinstance(history, pd.DataFrame) and not history.empty:
+        if _has_history_data(history):
             print(f"# METRICS ({len(history.columns)} total):", file=file)
             print("# Name                          | Type  | Range", file=file)
             for col in sorted(history.columns):
                 dtype = (
                     "float"
-                    if history[col].dtype in [np.float64, np.float32]
+                    if pd.api.types.is_float_dtype(history[col].dtype)
                     else str(history[col].dtype)
                 )
                 col_data = history[col].dropna()
-                if len(col_data) > 0:
+                if not col_data.empty:
                     min_val = col_data.min()
                     max_val = col_data.max()
                     print(f"{col:<32} | {dtype:<5} | [{min_val:.3g}, {max_val:.3g}]", file=file)
@@ -330,11 +396,11 @@ def _output_single_run_agent(
 
     if show_stats:
         print("[STATS]", file=file)
-        if history is not None and isinstance(history, pd.DataFrame) and not history.empty:
+        if _has_history_data(history):
             stats_data = []
             for col in sorted(history.columns):
                 col_data = history[col].dropna()
-                if len(col_data) > 0:
+                if not col_data.empty:
                     row = {
                         "metric": col,
                         "min": col_data.min(),
@@ -368,38 +434,17 @@ def _output_single_run_agent(
         return
 
     print("[CONFIG]", file=file)
-    if config:
-        max_key_len = max(len(k) for k in config.keys())
-        for key in sorted(config.keys()):
-            val = config[key]
-            print(f"{key:<{max_key_len}} = {val}", file=file)
-    else:
-        print("# (no config)", file=file)
+    _print_key_value_block(config, file, "# (no config)")
     print("", file=file)
 
     print("[SUMMARY]", file=file)
-    numeric_summary = {k: v for k, v in summary.items() if _is_numeric_summary_val(v)}
-    if numeric_summary:
-        max_key_len = max(len(k) for k in numeric_summary.keys())
-        for key in sorted(numeric_summary.keys()):
-            val = numeric_summary[key]
-            if isinstance(val, float):
-                print(f"{key:<{max_key_len}} = {val:.6g}", file=file)
-            else:
-                print(f"{key:<{max_key_len}} = {val}", file=file)
-    else:
-        print("# (no summary metrics)", file=file)
+    _print_key_value_block(summary, file, "# (no summary metrics)", format_floats=True)
     print("", file=file)
 
     if not human_mode:
         print("[HISTORY]", file=file)
-        if history is not None and isinstance(history, pd.DataFrame) and not history.empty:
-            cols = list(history.columns)
-            print(f"# step | {' | '.join(cols)}", file=file)
-
-            for idx, row in history.iterrows():
-                values = [f"{row[c]:.4g}" if pd.notna(row[c]) else "nan" for c in cols]
-                print(f"{idx} | {' | '.join(values)}", file=file)
+        if _has_history_data(history):
+            _print_history_table(history, file)
         else:
             print("# (no history data)", file=file)
         print("", file=file)
@@ -414,6 +459,11 @@ def _output_comparison_agent(
     show_all: bool = False,
 ) -> None:
     """Output multi-run comparison in agent format."""
+    if show_schema or show_stats:
+        for data in runs_data:
+            _output_single_run_agent(data, file, show_schema, show_stats, human_mode=True)
+        return
+
     print("[COMPARISON]", file=file)
     print(f"# Comparing {len(runs_data)} runs", file=file)
     print("", file=file)
@@ -456,34 +506,15 @@ def _output_comparison_agent(
 
     print("[SUMMARY_COMPARISON]", file=file)
 
-    all_summary_keys = set()
-    for d in runs_data:
-        all_summary_keys.update(d.get("summary", {}).keys())
-
-    def _is_valid_numeric(val):
-        if val is None or val == "":
-            return False
-        if isinstance(val, float) and math.isnan(val):
-            return False
-        return isinstance(val, (int, float))
-
-    def _is_non_numeric_present(val):
-        if val is None or val == "":
-            return False
-        return not isinstance(val, (int, float))
+    run_summaries = [_numeric_summary(run.get("summary", {})) for run in runs_data]
+    all_summary_keys = {key for summary in run_summaries for key in summary.keys()}
 
     if all_summary_keys and len(runs_data) >= 2:
         filtered_keys = []
         for key in sorted(all_summary_keys):
-            values = [d.get("summary", {}).get(key) for d in runs_data]
-
-            # Always skip non-numeric (e.g. plots, image metadata)
-            if any(_is_non_numeric_present(v) for v in values):
-                continue
+            values = [summary.get(key) for summary in run_summaries]
             if not show_all:
-                all_present = all(
-                    d.get("summary", {}).get(key) is not None for d in runs_data
-                )
+                all_present = all(v is not None for v in values)
                 if not all_present:
                     continue
 
@@ -504,18 +535,15 @@ def _output_comparison_agent(
             for key in filtered_keys:
                 row = f"{key:<{key_width}}"
                 values = []
-                for d, width in zip(runs_data, name_widths):
-                    val = d.get("summary", {}).get(key, "")
-                    if isinstance(val, float):
-                        val_str = f"{val:.4g}"
-                    else:
-                        val_str = str(val)[:width]
+                for summary, width in zip(run_summaries, name_widths):
+                    val = summary.get(key, "")
+                    val_str = _format_scalar(val)[:width]
                     row += f" | {val_str:<{width}}"
                     values.append(val)
 
                 if len(runs_data) == 2:
                     v1, v2 = values[0], values[1]
-                    if _is_valid_numeric(v1) and _is_valid_numeric(v2):
+                    if _is_numeric_summary_val(v1) and _is_numeric_summary_val(v2):
                         delta = v2 - v1
                         is_loss = any(
                             x in key.lower() for x in ["loss", "error", "mse", "mae"]
@@ -545,7 +573,7 @@ def _output_comparison_agent(
         histories = []
         for i, d in enumerate(runs_data):
             h = d.get("history")
-            if h is not None and isinstance(h, pd.DataFrame) and not h.empty:
+            if _has_history_data(h):
                 h = h.copy()
                 # Use run index to avoid column clashes when run names duplicate
                 h.columns = [f"{c} (run{i})" for c in h.columns]
@@ -565,13 +593,7 @@ def _output_comparison_agent(
 
             cols = list(merged.columns)
             if cols:
-                print(f"# step | {' | '.join(cols)}", file=file)
-                for idx, row in merged.iterrows():
-                    values = [
-                        f"{row[c]:.4g}" if pd.notna(row[c]) else "nan"
-                        for c in cols
-                    ]
-                    print(f"{idx} | {' | '.join(values)}", file=file)
+                _print_history_table(merged, file)
             else:
                 print("# (no history columns)", file=file)
         print("", file=file)
@@ -651,7 +673,7 @@ def main() -> None:
         "--select",
         "-s",
         metavar="PATTERN",
-        help="Regex pattern to select metrics (e.g. 'loss|epoch')",
+        help="Pipe-separated metric names to select (e.g. 'val/loss|train/loss')",
     )
     parser.add_argument(
         "--where",
@@ -699,16 +721,11 @@ def main() -> None:
     if parsed.checkpoints:
         for ckpt_path in parsed.checkpoints:
             if not os.path.exists(ckpt_path):
-                print(f"Error: Checkpoint not found: {ckpt_path}", file=sys.stderr)
-                sys.exit(1)
-            checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                _die(f"Checkpoint not found: {ckpt_path}")
+            checkpoint = _load_checkpoint(ckpt_path)
             wandb_run_path = checkpoint.get("wandb_run_path")
             if not wandb_run_path:
-                print(
-                    f"Error: Checkpoint has no wandb_run_path: {ckpt_path}",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+                _die(f"Checkpoint has no wandb_run_path: {ckpt_path}")
             run_infos.append((wandb_run_path, ckpt_path))
 
     if parsed.runs:
@@ -717,16 +734,15 @@ def main() -> None:
 
     if not run_infos:
         parser.print_help()
-        print("\nError: Must specify at least one --checkpoint or --run", file=sys.stderr)
-        sys.exit(1)
+        _die("Must specify at least one --checkpoint or --run")
 
-    seen = set()
-    unique_infos = []
+    missing = object()
+    unique_by_run = {}
     for run_path, ckpt_path in run_infos:
-        if run_path not in seen:
-            seen.add(run_path)
-            unique_infos.append((run_path, ckpt_path))
-    run_infos = unique_infos
+        existing = unique_by_run.get(run_path, missing)
+        if existing is missing or (existing is None and ckpt_path is not None):
+            unique_by_run[run_path] = ckpt_path
+    run_infos = [(run_path, ckpt_path) for run_path, ckpt_path in unique_by_run.items()]
 
     runs_data = []
     for run_path, ckpt_path in run_infos:
@@ -753,7 +769,12 @@ def main() -> None:
         for data in runs_data:
             data["history"] = _filter_nan_rows(data["history"], hide_any_nan=True)
 
-    output_file = open(parsed.output, "w") if parsed.output else sys.stdout
+    output_file = sys.stdout
+    if parsed.output:
+        try:
+            output_file = open(parsed.output, "w")
+        except OSError as exc:
+            _die(f"Could not open output file '{parsed.output}': {exc}")
 
     try:
         if parsed.format == "json":
