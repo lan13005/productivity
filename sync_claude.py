@@ -1,10 +1,15 @@
-#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.14"
+# dependencies = []
+# ///
+
 """Sync .claude directory, mapping the directory tree, into a target directory's .claude
 directory. symlinks all leaf files.
 """
 
 import os
 import argparse
+import sys
 
 # Directories to exclude when iterating (avoid symlinking contents of these)
 DEFAULT_EXCLUDE_DIRS = frozenset({
@@ -138,6 +143,12 @@ def main():
         help="Clean all symlinks in all subdirectories of the .claude directory",
     )
     args = parser.parse_args()
+    
+    # print version of python and location of executable\
+    print("\n================================================")
+    print(f"Python version: {sys.version}")
+    print(f"Executable location: {sys.executable}")
+    print("================================================\n")
 
     src_root = os.path.abspath(os.path.expanduser(args.src))
     tgt_root = os.path.abspath(os.path.expanduser(args.tgt_dir))
@@ -162,6 +173,8 @@ def main():
 
     linked = 0
     skipped = 0
+    
+    print(f"Syncing {src_root} to {tgt_root}")
 
     for src_abs, rel_path in iter_file_endpoints(src_root):
         tgt_abs = os.path.join(tgt_root, rel_path)
