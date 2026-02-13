@@ -6,6 +6,22 @@ directory. symlinks all leaf files.
 import os
 import argparse
 
+# Directories to exclude when iterating (avoid symlinking contents of these)
+DEFAULT_EXCLUDE_DIRS = frozenset({
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".tox",
+    "dist",
+    "build",
+    ".eggs",
+})
+
 def find_claude_directories(root_dir: str, depth: int = 1):
     """Search for .claude directories within root_dir up to `depth` levels deep."""
     root_dir = os.path.abspath(os.path.expanduser(root_dir))
@@ -31,15 +47,22 @@ def find_claude_directories(root_dir: str, depth: int = 1):
 
     return found
 
-def iter_file_endpoints(root: str):
+def iter_file_endpoints(root: str, exclude_dirs: frozenset[str] | None = None):
     """
     Yield (src_abs_path, rel_path_from_root) for all 'dangling endpoints' in the
     directory tree: files and symlinks that are not directories.
+    Skips hidden directories (names starting with '.') and any dirs in exclude_dirs.
     """
     root = os.path.abspath(os.path.expanduser(root))
+    exclude = exclude_dirs or DEFAULT_EXCLUDE_DIRS
 
     for cur_root, dirs, files in os.walk(root, followlinks=False):
-        # Exclude hidden dirs? (Not requested; keep everything)
+        # Avoid descending into hidden dirs or common excludes
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith(".") and d not in exclude
+        ]
+
         for name in files:
             src = os.path.join(cur_root, name)
             try:

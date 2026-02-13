@@ -1,0 +1,9 @@
+[project]
+name = "wandb-pull-logs"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "wandb>=0.15.0",
+    "pandas",
+    "torch>=2.0.0",
+]
