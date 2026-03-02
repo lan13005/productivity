@@ -41,6 +41,9 @@ Sync .claude directory, mapping the directory tree, into a target directory's .c
 ./sync_claude.py <target_folder> --clean-old-symlinks
 ```
 
+## VoiceInk
+Voice transcription open source software for macOS. See build instructions here [[notes/voiceink.md]]
+
 ## Things to think about:
 
 - Dynamic placeholders (like {cursor} and {date}) can be used with raycast snippets and quicklinks
